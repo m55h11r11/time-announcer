@@ -1,0 +1,15 @@
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Runtime log
+TimeAnnouncerBuild/announcer.log
+
+# Build artifact (binary lives in TimeAnnouncer.app)
+TimeAnnouncerBuild/TimeAnnouncer
+
+# Xcode / derived data
+*.xcodeproj
+*.xcworkspace
+DerivedData/
