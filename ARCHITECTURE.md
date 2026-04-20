@@ -3,7 +3,7 @@
 > **Maintenance rule**: Every time `main.swift` is modified, this file must be updated in the same session.
 > This is the single source of truth for understanding the codebase.
 >
-> **Baseline**: v4.4 — `TimeAnnouncerBuild/main.swift` (2144 lines)
+> **Baseline**: v4.5 — `TimeAnnouncerBuild/main.swift` (2198 lines)
 
 ---
 
@@ -31,7 +31,7 @@
 | Property | Value |
 |----------|-------|
 | **Name** | Time Announcer |
-| **Version** | v4.4 |
+| **Version** | v4.5 |
 | **Bundle ID** | `com.mshrmnsr.timeannouncer` |
 | **LaunchAgent label** | `com.mshrmnsr.timeannouncer` |
 | **macOS target** | macOS 11+ (uses `kIOMainPortDefault`, `kAudioObjectPropertyElementMain`) |
@@ -65,7 +65,7 @@ open "../TimeAnnouncer.app"
 │       └── MacOS/
 │           └── TimeAnnouncer             — Compiled binary (copied from Build/)
 ├── TimeAnnouncerBuild/
-│   ├── main.swift                        — Entire application source (~2144 lines)
+│   ├── main.swift                        — Entire application source (~2198 lines)
 │   └── announcer.log                     — Runtime log (created on first launch, appended)
 ├── ARCHITECTURE.md                       — This file
 └── install.sh                            — Optional install script
@@ -236,12 +236,16 @@ var canSpeak: Bool {
 
 ### Floating Window Mode (`.floatingWindow`)
 
-- **NSPanel** with `.nonactivatingPanel + .hudWindow + .utilityWindow`
+- **NSPanel** with `.nonactivatingPanel + .borderless`
 - **Level**: `.floating` — always on top
-- **Content**: Minimal HUD — current time (large), next-announcement countdown (small), status dot (green=active / red=muted or off)
-- **Hover transparency**: Fully opaque when mouse hovers, semi-transparent otherwise (`alphaValue` animation via `NSTrackingArea`)
-- **Position**: Draggable, position not persisted between sessions
-- **Settings access**: Ctrl+Shift+A opens the full settings window as a separate panel
+- **Content**: Minimal HUD — current time (large), next-announcement countdown (small, hover-only), status dot (green=active / red=muted or off)
+- **Hover transparency**: Fully opaque when mouse hovers, semi-transparent (0.35α) otherwise (`alphaValue` animation via `NSTrackingArea`)
+- **Double-click** opens the full settings window (v4.5+). Right-click shows a context menu with the same option.
+- **Edge snap** (v4.5+): After any drag, a 0.15 s debounce fires `snapFloatingPanelToEdge()`. If any edge of the panel is within 40 pt of the screen's `visibleFrame`, the panel animates flush to that edge. Corner snaps work by triggering both horizontal and vertical snap simultaneously.
+  - Observer: `NSWindow.didMoveNotification` on `floatingPanel`, removed in `teardownFloatingMode()`.
+  - Debounce timer: `snapDebounceTimer` (cancelled on teardown and quit).
+- **Position**: Draggable (`isMovableByWindowBackground = true`), position not persisted between sessions
+- **Settings access**: Double-click, right-click → "Open Settings…", or Ctrl+Shift+A
 
 ---
 
@@ -266,6 +270,7 @@ var canSpeak: Bool {
 | `muteTimer` | `NSTimer` | Fires at `muteEndDate` | Clears `isMuted` when temporary mute expires |
 | `uiUpdateTimer` | `NSTimer` | 1 s | Updates the next-announce countdown and floating panel display |
 | `logRefreshTimer` | `NSTimer` | 5 s | Re-reads `announcer.log` into the Log tab NSTextView |
+| `snapDebounceTimer` | `NSTimer` | 0.15 s one-shot | Fires after the floating panel stops moving; calls `snapFloatingPanelToEdge()` |
 
 **Timer setup sequence** (called from `applicationDidFinishLaunching`):
 1. `scheduleNextAnnouncement()` — starts `primaryTimer`
@@ -595,5 +600,5 @@ Memory management: `takeRetainedValue()` bridges the CF object to Swift ARC, whi
 
 ---
 
-*Last updated: v4.4 — 2026-04-20 (Improvement #2: smart menu-bar label)*
+*Last updated: v4.5 — 2026-04-20 (floating window: double-click to open settings + edge snap)*
 *Next update required when: any change to main.swift*

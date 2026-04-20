@@ -229,6 +229,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
     var backupWatchdog: DispatchSourceTimer?
     var muteTimer: Timer?
     var uiUpdateTimer: Timer?
+    var snapDebounceTimer: Timer?
 
     // IOKit lid notification
     var notifyPort: IONotificationPortRef?
@@ -303,7 +304,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
                        name: NSWorkspace.screensDidWakeNotification, object: nil)
 
         lidOpen = !isLidClosed()
-        logEvent("LAUNCH v4.4 lid=\(lidOpen ? "open" : "closed") interval=\(announcementInterval)min hours=\(activeStartHour)-\(activeEndHour) mode=\(displayMode.rawValue) logPath=\(logPath)")
+        logEvent("LAUNCH v4.5 lid=\(lidOpen ? "open" : "closed") interval=\(announcementInterval)min hours=\(activeStartHour)-\(activeEndHour) mode=\(displayMode.rawValue) logPath=\(logPath)")
 
         scheduleNextAnnouncement()
         startWatchdog()
@@ -1236,6 +1237,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         override func mouseExited(with event: NSEvent) {
             appDelegate?.floatingMouseExited()
         }
+        // Double-click opens settings; single-click drags (handled by isMovableByWindowBackground)
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 {
+                appDelegate?.openSettingsWindow()
+                return
+            }
+            super.mouseDown(with: event)
+        }
     }
 
     func floatingMouseEntered() {
@@ -1254,6 +1263,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         }
         // Hide the "next" label when idle
         floatingNextLabel?.isHidden = true
+    }
+
+    @objc func floatingPanelDidMove() {
+        snapDebounceTimer?.invalidate()
+        snapDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+            self?.snapFloatingPanelToEdge()
+        }
+    }
+
+    func snapFloatingPanelToEdge() {
+        guard let panel = floatingPanel,
+              let screen = panel.screen ?? NSScreen.main else { return }
+        let sf = screen.visibleFrame
+        var origin = panel.frame.origin
+        let size = panel.frame.size
+        let threshold: CGFloat = 40
+
+        if origin.x - sf.minX < threshold {
+            origin.x = sf.minX
+        } else if sf.maxX - (origin.x + size.width) < threshold {
+            origin.x = sf.maxX - size.width
+        }
+
+        if origin.y - sf.minY < threshold {
+            origin.y = sf.minY
+        } else if sf.maxY - (origin.y + size.height) < threshold {
+            origin.y = sf.maxY - size.height
+        }
+
+        let current = panel.frame.origin
+        guard origin.x != current.x || origin.y != current.y else { return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            panel.animator().setFrameOrigin(origin)
+        }
     }
 
     func setupFloatingMode() {
@@ -1332,7 +1376,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Announce Now", action: #selector(announceNowAction), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Open Settings…", action: #selector(openSettingsWindow), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Open Settings… (or double-click)", action: #selector(openSettingsWindow), keyEquivalent: ","))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Switch to Menu Bar", action: #selector(switchToMenuBarMode), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
@@ -1345,11 +1389,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
             floatingPanel?.setFrameOrigin(NSPoint(x: sf.maxX - panelW - 20, y: sf.maxY - panelH - 10))
         }
 
+        // Register for move notifications so we can snap to screen edges
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(floatingPanelDidMove),
+            name: NSWindow.didMoveNotification, object: floatingPanel
+        )
+
         NSApp.setActivationPolicy(.regular)
         floatingPanel?.orderFront(nil)
     }
 
     func teardownFloatingMode() {
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didMoveNotification, object: floatingPanel)
+        snapDebounceTimer?.invalidate()
+        snapDebounceTimer = nil
         floatingPanel?.orderOut(nil)
         floatingPanel = nil
         floatingTimeLabel = nil
@@ -2114,6 +2167,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         muteTimer?.invalidate()
         uiUpdateTimer?.invalidate()
         logRefreshTimer?.invalidate()
+        snapDebounceTimer?.invalidate()
         synthesizer.stopSpeaking(at: .immediate)
         sayProcess?.terminate()
         if notifier != 0 { IOObjectRelease(notifier) }
