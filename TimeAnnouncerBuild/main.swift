@@ -303,7 +303,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
                        name: NSWorkspace.screensDidWakeNotification, object: nil)
 
         lidOpen = !isLidClosed()
-        logEvent("LAUNCH v4.3 lid=\(lidOpen ? "open" : "closed") interval=\(announcementInterval)min hours=\(activeStartHour)-\(activeEndHour) mode=\(displayMode.rawValue) logPath=\(logPath)")
+        logEvent("LAUNCH v4.4 lid=\(lidOpen ? "open" : "closed") interval=\(announcementInterval)min hours=\(activeStartHour)-\(activeEndHour) mode=\(displayMode.rawValue) logPath=\(logPath)")
 
         scheduleNextAnnouncement()
         startWatchdog()
@@ -1002,7 +1002,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
     func setupMenuBarMode() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "clock.fill", accessibilityDescription: "Time Announcer")
+            // Title is populated by refreshUI() (smart countdown label).
+            // Seed a placeholder so the item has width before the first refresh.
+            button.title = "⏰"
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
             button.target = self
             button.action = #selector(statusBarClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -1517,8 +1520,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
             }
         }
 
-        // ── Update status bar icon tooltip ──
-        statusItem?.button?.toolTip = "Time Announcer — " + (canSpeak ? "Active" : (enabled ? (isMuted ? "Muted" : "Paused") : "Off"))
+        // ── Update status bar button (smart countdown label) ──
+        if let btn = statusItem?.button {
+            let newTitle: String
+            if !enabled {
+                newTitle = "⏸"
+            } else if isMuted {
+                if let endDate = muteEndDate {
+                    let rem = max(0, Int(endDate.timeIntervalSinceNow))
+                    let remMins = (rem + 59) / 60
+                    newTitle = remMins >= 1 ? "🔇 \(remMins)m" : "🔇"
+                } else {
+                    newTitle = "🔇"
+                }
+            } else if !lidOpen {
+                newTitle = "💤"
+            } else if !inActiveHours {
+                newTitle = "😴"
+            } else {
+                let minsUp = (secsUntilNext + 59) / 60
+                newTitle = minsUp >= 1 ? "⏰ \(minsUp)m" : "⏰ <1m"
+            }
+            if btn.title != newTitle { btn.title = newTitle }
+            btn.toolTip = "Time Announcer — " + (canSpeak ? "Active" : (enabled ? (isMuted ? "Muted" : "Paused") : "Off"))
+        }
     }
 
     // MARK: - Timer Scheduling
