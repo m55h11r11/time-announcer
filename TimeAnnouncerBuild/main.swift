@@ -30,13 +30,14 @@ private let logTimestampFormatter: ISO8601DateFormatter = {
 
 func logEvent(_ message: String) {
     let line = "\(logTimestampFormatter.string(from: Date())) \(message)\n"
+    guard let data = line.data(using: .utf8) else { return }
     logQueue.async {
         if let handle = FileHandle(forWritingAtPath: logPath) {
             handle.seekToEndOfFile()
-            handle.write(line.data(using: .utf8)!)
+            handle.write(data)
             handle.closeFile()
         } else {
-            FileManager.default.createFile(atPath: logPath, contents: line.data(using: .utf8))
+            FileManager.default.createFile(atPath: logPath, contents: data)
         }
     }
 }
@@ -259,7 +260,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
     var muteEndDate: Date?
     var speechVolume: Float = 1.0
     var synthesizer = AVSpeechSynthesizer()
-    var speechDidStart: Bool = false
     var sayProcess: Process? = nil
     let speechQueue = DispatchQueue(label: "com.timeannouncer.speech", qos: .userInitiated)
 
@@ -270,7 +270,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
     var selectedVoiceIdentifier: String? = nil
     var selectedVoiceName: String? = nil
     var hourlyChimeEnabled: Bool = true
-    var chimeVolume: Float = 2.5  // afplay -v value: 0 = off, 0.1 = whisper, 2.5 = loud
+    // Stored in afplay `-v` scale (0.0–3.0), NOT NSSound scale (0.0–1.0).
+    // For NSSound.play (pre-speech chime) it MUST be clamped: `min(1.0, chimeVolume / 3.0)`.
+    // 0 = off, 0.1 = whisper, 1.0 = normal, 2.5 = loud, 3.0 = max.
+    var chimeVolume: Float = 2.5
     var allDayEnabled: Bool = true
 
     let launchAgentPath = NSHomeDirectory() + "/Library/LaunchAgents/com.mshrmnsr.timeannouncer.plist"
@@ -304,7 +307,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
                        name: NSWorkspace.screensDidWakeNotification, object: nil)
 
         lidOpen = !isLidClosed()
-        logEvent("LAUNCH v4.5 lid=\(lidOpen ? "open" : "closed") interval=\(announcementInterval)min hours=\(activeStartHour)-\(activeEndHour) mode=\(displayMode.rawValue) logPath=\(logPath)")
+        logEvent("LAUNCH v4.6 lid=\(lidOpen ? "open" : "closed") interval=\(announcementInterval)min hours=\(activeStartHour)-\(activeEndHour) mode=\(displayMode.rawValue) logPath=\(logPath)")
 
         scheduleNextAnnouncement()
         startWatchdog()
@@ -374,6 +377,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         // Validate saved voice still exists
         if let voiceId = selectedVoiceIdentifier,
            AVSpeechSynthesisVoice(identifier: voiceId) == nil {
+            logEvent("VOICE_UNAVAILABLE id=\(voiceId) name=\(selectedVoiceName ?? "nil") — falling back to default")
             selectedVoiceIdentifier = nil
             selectedVoiceName = nil
         }
@@ -1267,8 +1271,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
 
     @objc func floatingPanelDidMove() {
         snapDebounceTimer?.invalidate()
-        snapDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+        // 0.4 s debounce — long enough that the user has clearly stopped dragging.
+        snapDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             self?.snapFloatingPanelToEdge()
+            self?.saveFloatingPanelPosition()
         }
     }
 
@@ -1298,6 +1304,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
             ctx.duration = 0.15
             panel.animator().setFrameOrigin(origin)
         }
+    }
+
+    func saveFloatingPanelPosition() {
+        guard let panel = floatingPanel else { return }
+        let origin = panel.frame.origin
+        savePreference("TAFloatingPanelX", value: Double(origin.x))
+        savePreference("TAFloatingPanelY", value: Double(origin.y))
     }
 
     func setupFloatingMode() {
@@ -1383,8 +1396,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         contentView.menu = menu
 
-        // Position top-right
-        if let screen = NSScreen.main {
+        // Restore saved position; default to top-right if none saved
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "TAFloatingPanelX") != nil,
+           defaults.object(forKey: "TAFloatingPanelY") != nil {
+            let x = CGFloat(defaults.double(forKey: "TAFloatingPanelX"))
+            let y = CGFloat(defaults.double(forKey: "TAFloatingPanelY"))
+            var origin = NSPoint(x: x, y: y)
+            // Clamp to whichever screen currently contains the saved origin
+            let screens = NSScreen.screens
+            let panelRect = NSRect(x: x, y: y, width: panelW, height: panelH)
+            let containing = screens.first(where: { $0.visibleFrame.intersects(panelRect) }) ?? NSScreen.main
+            if let sf = containing?.visibleFrame {
+                origin.x = min(max(origin.x, sf.minX), sf.maxX - panelW)
+                origin.y = min(max(origin.y, sf.minY), sf.maxY - panelH)
+            }
+            floatingPanel?.setFrameOrigin(origin)
+        } else if let screen = NSScreen.main {
             let sf = screen.visibleFrame
             floatingPanel?.setFrameOrigin(NSPoint(x: sf.maxX - panelW - 20, y: sf.maxY - panelH - 10))
         }
@@ -1403,12 +1431,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         NotificationCenter.default.removeObserver(self, name: NSWindow.didMoveNotification, object: floatingPanel)
         snapDebounceTimer?.invalidate()
         snapDebounceTimer = nil
+        if let area = floatingTrackingArea, let contentView = floatingPanel?.contentView {
+            contentView.removeTrackingArea(area)
+        }
+        floatingTrackingArea = nil
         floatingPanel?.orderOut(nil)
         floatingPanel = nil
         floatingTimeLabel = nil
         floatingNextLabel = nil
         floatingStatusDot = nil
-        floatingTrackingArea = nil
     }
 
     // MARK: - Mode Switching
@@ -2003,11 +2034,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         }
     }
 
-    // AVSpeechSynthesizerDelegate (for fallback only)
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        speechDidStart = true
-    }
-
     // MARK: - Screen Sleep/Wake
 
     @objc func screenDidSleep() {
@@ -2053,13 +2079,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
     }
 
     func muteFor(minutes: Int) {
+        // Clamp to sensible range: 1 minute .. 24 hours. Prevents Int overflow.
+        let clamped = max(1, min(minutes, 24 * 60))
+        let seconds = Double(clamped) * 60.0
         isMuted = true
-        muteEndDate = Date().addingTimeInterval(Double(minutes * 60))
+        muteEndDate = Date().addingTimeInterval(seconds)
         muteTimer?.invalidate()
-        muteTimer = Timer.scheduledTimer(withTimeInterval: Double(minutes * 60), repeats: false) { [weak self] _ in
+        muteTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
             self?.unmuteAction()
         }
-        logEvent("MUTED duration=\(minutes)min")
+        logEvent("MUTED duration=\(clamped)min")
         refreshUI()
     }
 
@@ -2145,16 +2174,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         }
     }
 
+    /// Resolves the current .app bundle path from the running binary.
+    /// Falls back to the legacy hardcoded path if resolution fails.
+    func resolveAppBundlePath() -> String {
+        let exe = ProcessInfo.processInfo.arguments[0]
+        if let range = exe.range(of: "/TimeAnnouncer.app/") {
+            let upTo = exe.index(range.lowerBound, offsetBy: "/TimeAnnouncer.app".count)
+            return String(exe[exe.startIndex..<upTo])
+        }
+        return NSHomeDirectory() + "/claude1/time announcer/TimeAnnouncer.app"
+    }
+
     func writeLaunchAgentPlist() {
+        let appPath = resolveAppBundlePath()
         let plist: [String: Any] = [
             "Label": "com.mshrmnsr.timeannouncer",
-            "ProgramArguments": ["/usr/bin/open", "-a",
-                NSHomeDirectory() + "/claude1/time announcer/TimeAnnouncer.app"],
+            "ProgramArguments": ["/usr/bin/open", "-a", appPath],
             "RunAtLoad": true,
             "KeepAlive": false
         ]
         if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
             try? data.write(to: URL(fileURLWithPath: launchAgentPath))
+            logEvent("LAUNCH_AGENT_WRITTEN path=\(appPath)")
         }
     }
 

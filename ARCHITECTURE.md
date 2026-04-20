@@ -3,7 +3,7 @@
 > **Maintenance rule**: Every time `main.swift` is modified, this file must be updated in the same session.
 > This is the single source of truth for understanding the codebase.
 >
-> **Baseline**: v4.5 — `TimeAnnouncerBuild/main.swift` (2198 lines)
+> **Baseline**: v4.6 — `TimeAnnouncerBuild/main.swift` (2239 lines)
 
 ---
 
@@ -31,7 +31,7 @@
 | Property | Value |
 |----------|-------|
 | **Name** | Time Announcer |
-| **Version** | v4.5 |
+| **Version** | v4.6 |
 | **Bundle ID** | `com.mshrmnsr.timeannouncer` |
 | **LaunchAgent label** | `com.mshrmnsr.timeannouncer` |
 | **macOS target** | macOS 11+ (uses `kIOMainPortDefault`, `kAudioObjectPropertyElementMain`) |
@@ -65,7 +65,7 @@ open "../TimeAnnouncer.app"
 │       └── MacOS/
 │           └── TimeAnnouncer             — Compiled binary (copied from Build/)
 ├── TimeAnnouncerBuild/
-│   ├── main.swift                        — Entire application source (~2198 lines)
+│   ├── main.swift                        — Entire application source (~2239 lines)
 │   └── announcer.log                     — Runtime log (created on first launch, appended)
 ├── ARCHITECTURE.md                       — This file
 └── install.sh                            — Optional install script
@@ -166,6 +166,8 @@ All keys use `UserDefaults.standard`. Loaded in `loadPreferences()` (line 363), 
 | `TAHotkeyMute` | `String` | `"m"` | Letter for Ctrl+Shift+? to toggle mute (15 min) |
 | `TAHotkeyOpen` | `String` | `"a"` | Letter for Ctrl+Shift+? to open UI |
 | `TADisplayMode` | `String` | `"menuBar"` | `DisplayMode.rawValue` — persists between launches |
+| `TAFloatingPanelX` | `Double?` | `nil` | Saved floating-panel origin X (v4.6+). Written by `saveFloatingPanelPosition()` after a drag settles |
+| `TAFloatingPanelY` | `Double?` | `nil` | Saved floating-panel origin Y (v4.6+). Restored on `setupFloatingMode()`; clamped to the containing screen |
 
 ### Runtime Properties (not persisted)
 
@@ -564,7 +566,7 @@ Memory management: `takeRetainedValue()` bridges the CF object to Swift ARC, whi
 
 7. **No announcement history or stats**: Log is raw text. No way to see "how many announcements today?" or build an accountability streak.
 
-8. **App path is hardcoded in LaunchAgent**: Plist uses `NSHomeDirectory() + "/claude1/time announcer/TimeAnnouncer.app"` — breaks if the app is moved.
+8. ~~App path is hardcoded in LaunchAgent~~ **Fixed in v4.6**: `resolveAppBundlePath()` now derives the path from `ProcessInfo.arguments[0]` at plist-write time; legacy path kept as fallback only.
 
 ### Top 5 Improvements to Reach 10/10
 
@@ -600,5 +602,5 @@ Memory management: `takeRetainedValue()` bridges the CF object to Swift ARC, whi
 
 ---
 
-*Last updated: v4.5 — 2026-04-20 (floating window: double-click to open settings + edge snap)*
+*Last updated: v4.6 — 2026-04-20 (full audit fixes: logEvent guard, dead speechDidStart removed, snap debounce 0.15→0.4s, floating panel position persisted, dynamic LaunchAgent path, mute clamp, tracking-area teardown order, voice-fallback log, chime volume doc)*
 *Next update required when: any change to main.swift*
