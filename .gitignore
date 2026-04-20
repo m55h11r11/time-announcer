@@ -13,3 +13,6 @@ TimeAnnouncerBuild/TimeAnnouncer
 *.xcodeproj
 *.xcworkspace
 DerivedData/
+auto-update.log
+auto-update.stdout.log
+auto-update.stderr.log
