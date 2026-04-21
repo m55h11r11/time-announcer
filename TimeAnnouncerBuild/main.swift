@@ -179,7 +179,7 @@ enum DisplayMode: String {
 
 // MARK: - AppDelegate
 
-class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSynthesizerDelegate, NSPopoverDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSynthesizerDelegate, NSPopoverDelegate, NSTabViewDelegate {
 
     var window: NSWindow!
     var tabView: NSTabView!
@@ -307,7 +307,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
                        name: NSWorkspace.screensDidWakeNotification, object: nil)
 
         lidOpen = !isLidClosed()
-        logEvent("LAUNCH v4.6 lid=\(lidOpen ? "open" : "closed") interval=\(announcementInterval)min hours=\(activeStartHour)-\(activeEndHour) mode=\(displayMode.rawValue) logPath=\(logPath)")
+        logEvent("LAUNCH v4.7 lid=\(lidOpen ? "open" : "closed") interval=\(announcementInterval)min hours=\(activeStartHour)-\(activeEndHour) mode=\(displayMode.rawValue) logPath=\(logPath)")
 
         scheduleNextAnnouncement()
         startWatchdog()
@@ -447,8 +447,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         tabView.addTabViewItem(settingsTab)
         tabView.addTabViewItem(logTab)
 
+        // Remember last-selected tab across sessions
+        tabView.delegate = self
+        let saved = UserDefaults.standard.string(forKey: "TALastTab") ?? "main"
+        if let item = tabView.tabViewItems.first(where: { ($0.identifier as? String) == saved }) {
+            tabView.selectTabViewItem(item)
+        }
+
         window.contentView = tabView
         // Don't show window here — display mode setup will decide visibility
+    }
+
+    // NSTabViewDelegate — persist which tab the user was on
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        if let id = tabViewItem?.identifier as? String {
+            savePreference("TALastTab", value: id)
+        }
     }
 
     // MARK: - Group Box Helper
@@ -673,11 +687,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         let voiceTitle = makeLabel(in: voicev, x: 14, y: voiceBoxH - 26, width: 50, height: 18, fontSize: 13, bold: true)
         voiceTitle.stringValue = "Voice"
 
-        voicePopup = NSPopUpButton(frame: NSRect(x: 66, y: voiceBoxH - 28, width: boxW - 80, height: 24))
+        // Voice picker + inline "Test" button
+        let testBtnW: CGFloat = 52
+        voicePopup = NSPopUpButton(frame: NSRect(x: 66, y: voiceBoxH - 28, width: boxW - 80 - testBtnW - 4, height: 24))
         populateVoicePicker()
         voicePopup.target = self
         voicePopup.action = #selector(voiceChanged)
         voicev.addSubview(voicePopup)
+
+        let testVoiceBtn = NSButton(frame: NSRect(x: boxW - 14 - testBtnW, y: voiceBoxH - 28, width: testBtnW, height: 24))
+        testVoiceBtn.bezelStyle = .rounded
+        testVoiceBtn.title = "Test"
+        testVoiceBtn.font = NSFont.systemFont(ofSize: 11)
+        testVoiceBtn.target = self
+        testVoiceBtn.action = #selector(testVoice)
+        voicev.addSubview(testVoiceBtn)
 
         // Pre-speech chime volume
         let chimeLbl = makeLabel(in: voicev, x: 14, y: voiceBoxH - 52, width: 90, height: 18, fontSize: 12, bold: false)
@@ -926,14 +950,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         let btnBarH: CGFloat = 36
 
         // Button bar at bottom
-        let shareBtn = NSButton(frame: NSRect(x: 16, y: 8, width: 80, height: 28))
+        let shareBtn = NSButton(frame: NSRect(x: 16, y: 8, width: 72, height: 28))
         shareBtn.bezelStyle = .rounded
         shareBtn.title = "Share…"
         shareBtn.target = self
         shareBtn.action = #selector(shareLog)
         view.addSubview(shareBtn)
 
-        let clearBtn = NSButton(frame: NSRect(x: 102, y: 8, width: 80, height: 28))
+        let copyBtn = NSButton(frame: NSRect(x: 94, y: 8, width: 60, height: 28))
+        copyBtn.bezelStyle = .rounded
+        copyBtn.title = "Copy"
+        copyBtn.target = self
+        copyBtn.action = #selector(copyLog)
+        view.addSubview(copyBtn)
+
+        let clearBtn = NSButton(frame: NSRect(x: 160, y: 8, width: 80, height: 28))
         clearBtn.bezelStyle = .rounded
         clearBtn.title = "Clear Log"
         clearBtn.target = self
@@ -964,6 +995,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         guard FileManager.default.fileExists(atPath: logPath) else { return }
         let picker = NSSharingServicePicker(items: [fileURL])
         picker.show(relativeTo: .zero, of: window.contentView!, preferredEdge: .minY)
+    }
+
+    @objc func copyLog() {
+        let content = logTextView.string
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(content, forType: .string)
+        logEvent("LOG_COPIED bytes=\(content.utf8.count)")
     }
 
     @objc func clearLog() {
@@ -1067,7 +1106,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         if isMuted {
             menu.addItem(NSMenuItem(title: "Unmute", action: #selector(unmuteAction), keyEquivalent: ""))
         } else {
-            menu.addItem(NSMenuItem(title: "Mute 15 min", action: #selector(quickMuteAction), keyEquivalent: ""))
+            // "Mute" with a submenu of durations
+            let muteParent = NSMenuItem(title: "Mute", action: nil, keyEquivalent: "")
+            let muteSub = NSMenu()
+            for (label, mins) in [("15 minutes", 15), ("30 minutes", 30), ("1 hour", 60), ("2 hours", 120), ("4 hours", 240)] {
+                let item = NSMenuItem(title: label, action: #selector(muteFromMenu(_:)), keyEquivalent: "")
+                item.representedObject = mins
+                muteSub.addItem(item)
+            }
+            muteSub.addItem(NSMenuItem.separator())
+            let tomorrow = NSMenuItem(title: "Until tomorrow at 9 AM", action: #selector(muteUntilTomorrowMorning), keyEquivalent: "")
+            muteSub.addItem(tomorrow)
+            muteParent.submenu = muteSub
+            menu.addItem(muteParent)
         }
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Open Settings…", action: #selector(openSettingsWindow), keyEquivalent: ","))
@@ -1080,6 +1131,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         statusItem?.menu = menu
         statusItem?.button?.performClick(nil)
         statusItem?.menu = nil  // Reset so left-click still works
+    }
+
+    @objc func muteFromMenu(_ sender: NSMenuItem) {
+        if let mins = sender.representedObject as? Int {
+            muteFor(minutes: mins)
+        }
+    }
+
+    @objc func muteUntilTomorrowMorning() {
+        // Compute minutes from now to next 9 AM (tomorrow if past 9 AM today, else today)
+        let cal = Calendar.current
+        let now = Date()
+        var comps = cal.dateComponents([.year, .month, .day], from: now)
+        comps.hour = 9; comps.minute = 0; comps.second = 0
+        guard var target = cal.date(from: comps) else { return }
+        if target <= now { target = cal.date(byAdding: .day, value: 1, to: target)! }
+        let mins = max(1, Int(target.timeIntervalSince(now) / 60.0))
+        muteFor(minutes: mins)
     }
 
     func buildPopoverContent(_ v: NSView) {
@@ -1200,6 +1269,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         muteFor(minutes: 15)
     }
 
+    @objc func menuToggleMute() {
+        if isMuted { unmuteAction() } else { muteFor(minutes: 15) }
+    }
+
     @objc func openSettingsWindow() {
         popover?.close()
         // Become regular app so window appears in window list and can receive focus
@@ -1207,8 +1280,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
-        // Select Settings tab
-        tabView.selectTabViewItem(at: 1)
+        // Restore the tab the user was last on (defaults to Settings)
+        let saved = UserDefaults.standard.string(forKey: "TALastTab") ?? "settings"
+        if let item = tabView.tabViewItems.first(where: { ($0.identifier as? String) == saved }) {
+            tabView.selectTabViewItem(item)
+        }
     }
 
     @objc func switchToFloatingMode() {
@@ -1878,6 +1954,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, AVSpeechSy
         speak(text)
     }
 
+    @objc func testVoice() {
+        logEvent("VOICE_TEST voice=\(selectedVoiceName ?? "default")")
+        speak("Voice test")
+    }
+
     /// Query macOS audio state via CoreAudio (instant, < 1ms — no process spawning)
     private func getAudioState() -> (vol: Int, muted: Bool, device: String, isVirtual: Bool) {
         let deviceID = caGetDefaultOutputDevice()
@@ -2227,13 +2308,48 @@ let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
 
-// Build main menu (needed for Cmd+Q to work)
+// Build main menu — standard macOS structure (App menu, Edit menu, Window menu)
 let mainMenu = NSMenu()
+
+// App menu (appears as "Time Announcer")
 let appMenuItem = NSMenuItem()
 mainMenu.addItem(appMenuItem)
 let appMenu = NSMenu()
+appMenu.addItem(NSMenuItem(title: "Settings…", action: #selector(AppDelegate.openSettingsWindow), keyEquivalent: ","))
+appMenu.addItem(NSMenuItem.separator())
+appMenu.addItem(NSMenuItem(title: "Announce Now", action: #selector(AppDelegate.announceNowAction), keyEquivalent: "t"))
+let menuMuteItem = NSMenuItem(title: "Toggle Mute", action: #selector(AppDelegate.menuToggleMute), keyEquivalent: "m")
+menuMuteItem.keyEquivalentModifierMask = [.command, .shift]
+appMenu.addItem(menuMuteItem)
+appMenu.addItem(NSMenuItem.separator())
+let hideItem = NSMenuItem(title: "Hide Time Announcer", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+appMenu.addItem(hideItem)
+appMenu.addItem(NSMenuItem.separator())
 appMenu.addItem(NSMenuItem(title: "Quit Time Announcer", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 appMenuItem.submenu = appMenu
+
+// Edit menu — standard items so Cut/Copy/Paste/Select All work in the Log tab text view
+let editMenuItem = NSMenuItem()
+mainMenu.addItem(editMenuItem)
+let editMenu = NSMenu(title: "Edit")
+editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+editMenu.addItem(NSMenuItem.separator())
+editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+editMenuItem.submenu = editMenu
+
+// Window menu — standard: Minimize / Close / Zoom
+let windowMenuItem = NSMenuItem()
+mainMenu.addItem(windowMenuItem)
+let windowMenu = NSMenu(title: "Window")
+windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+windowMenu.addItem(NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: ""))
+windowMenu.addItem(NSMenuItem.separator())
+windowMenu.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+windowMenuItem.submenu = windowMenu
+app.windowsMenu = windowMenu
+
 app.mainMenu = mainMenu
 
 app.run()

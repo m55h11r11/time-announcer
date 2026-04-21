@@ -3,7 +3,7 @@
 > **Maintenance rule**: Every time `main.swift` is modified, this file must be updated in the same session.
 > This is the single source of truth for understanding the codebase.
 >
-> **Baseline**: v4.6 — `TimeAnnouncerBuild/main.swift` (2239 lines)
+> **Baseline**: v4.7 — `TimeAnnouncerBuild/main.swift` (2355 lines)
 
 ---
 
@@ -31,7 +31,7 @@
 | Property | Value |
 |----------|-------|
 | **Name** | Time Announcer |
-| **Version** | v4.6 |
+| **Version** | v4.7 |
 | **Bundle ID** | `com.mshrmnsr.timeannouncer` |
 | **LaunchAgent label** | `com.mshrmnsr.timeannouncer` |
 | **macOS target** | macOS 11+ (uses `kIOMainPortDefault`, `kAudioObjectPropertyElementMain`) |
@@ -65,7 +65,7 @@ open "../TimeAnnouncer.app"
 │       └── MacOS/
 │           └── TimeAnnouncer             — Compiled binary (copied from Build/)
 ├── TimeAnnouncerBuild/
-│   ├── main.swift                        — Entire application source (~2239 lines)
+│   ├── main.swift                        — Entire application source (~2355 lines)
 │   └── announcer.log                     — Runtime log (created on first launch, appended)
 ├── ARCHITECTURE.md                       — This file
 └── install.sh                            — Optional install script
@@ -168,6 +168,7 @@ All keys use `UserDefaults.standard`. Loaded in `loadPreferences()` (line 363), 
 | `TADisplayMode` | `String` | `"menuBar"` | `DisplayMode.rawValue` — persists between launches |
 | `TAFloatingPanelX` | `Double?` | `nil` | Saved floating-panel origin X (v4.6+). Written by `saveFloatingPanelPosition()` after a drag settles |
 | `TAFloatingPanelY` | `Double?` | `nil` | Saved floating-panel origin Y (v4.6+). Restored on `setupFloatingMode()`; clamped to the containing screen |
+| `TALastTab` | `String?` | `"main"` | Identifier (`"main"`/`"settings"`/`"log"`) of the last-selected settings-window tab (v4.7+) |
 
 ### Runtime Properties (not persisted)
 
@@ -212,11 +213,24 @@ var canSpeak: Bool {
 | Tab | Contents |
 |-----|----------|
 | **Main** | Status label, next-announce countdown, lid indicator, Enable/Disable button, Announce Now button, volume slider (0–100%), mute duration popup, Mute/Unmute buttons, mute-remaining label |
-| **Settings** | Interval popup (5/10/15/30 min), All Day checkbox, Start/End hour popups, Voice popup (populated from AVSpeechSynthesisVoice.speechVoices()), Hourly chime checkbox, Chime volume slider, Start at Login checkbox, Hotkey buttons (Ctrl+Shift+?) for announce/mute/open, Display Mode segmented control |
-| **Log** | NSScrollView + NSTextView (monospace) showing last N lines from announcer.log, auto-refreshed every 5s |
+| **Settings** | Interval popup (5/10/15/30 min), All Day checkbox, Start/End hour popups, Voice popup + **Test button** (v4.7+) for live preview, Hourly chime checkbox, Chime volume slider, Start at Login checkbox, Hotkey buttons (Ctrl+Shift+?) for announce/mute/open, Display Mode segmented control |
+| **Log** | NSScrollView + NSTextView (monospace) showing last N lines from announcer.log, auto-refreshed every 5 s. Buttons: **Share…**, **Copy** (v4.7+, copies the displayed text to the pasteboard), **Clear Log** |
 
 - **Menu bar mode behavior**: Window hides itself (`window.orderOut(nil)`) when popover opens/closes. Returns to `.accessory` activation policy when window closes.
 - **Floating mode behavior**: Settings window is shown via `openSettingsWindow()` when Dock icon is clicked or hotkey triggers.
+- **Tab memory** (v4.7+): The last-selected tab identifier is written to `TALastTab` on every tab switch via the `NSTabViewDelegate.tabView(_:didSelect:)` hook, and restored on `buildWindow()` and `openSettingsWindow()`.
+
+### App Main Menu (v4.7+)
+
+Built in the bootstrap block. Provides standard macOS menu structure:
+
+| Menu | Items (and shortcuts) |
+|------|-----------------------|
+| **Time Announcer** | Settings… (⌘,) · Announce Now (⌘T) · Toggle Mute (⌘⇧M) · Hide (⌘H) · Quit (⌘Q) |
+| **Edit** | Cut/Copy/Paste/Select All — required for text selection in the Log tab |
+| **Window** | Minimize (⌘M, when Edit focus elsewhere) · Zoom · Close (⌘W) |
+
+The status-bar right-click menu includes a **Mute submenu** (v4.7+) with presets: 15 min / 30 min / 1 h / 2 h / 4 h / "Until tomorrow at 9 AM" (computed via `Calendar.current`; rolls to the next day if past 9 AM).
 
 ### Menu Bar Mode (`.menuBar`)
 
@@ -602,5 +616,5 @@ Memory management: `takeRetainedValue()` bridges the CF object to Swift ARC, whi
 
 ---
 
-*Last updated: v4.6 — 2026-04-20 (full audit fixes: logEvent guard, dead speechDidStart removed, snap debounce 0.15→0.4s, floating panel position persisted, dynamic LaunchAgent path, mute clamp, tracking-area teardown order, voice-fallback log, chime volume doc)*
+*Last updated: v4.7 — 2026-04-20 (UX wins: standard app main menu with Cmd+, / Cmd+W / Cmd+T / Cmd+Shift+M / Edit menu / Window menu, last-tab memory, Copy-logs button, extended mute submenu, Test Voice button)*
 *Next update required when: any change to main.swift*
