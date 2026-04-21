@@ -3,7 +3,7 @@
 > **Maintenance rule**: Every time `main.swift` is modified, this file must be updated in the same session.
 > This is the single source of truth for understanding the codebase.
 >
-> **Baseline**: v4.3 — `TimeAnnouncerBuild/main.swift` (2119 lines)
+> **Baseline**: v4.7 — `TimeAnnouncerBuild/main.swift` (2355 lines)
 
 ---
 
@@ -31,7 +31,7 @@
 | Property | Value |
 |----------|-------|
 | **Name** | Time Announcer |
-| **Version** | v4.3 |
+| **Version** | v4.7 |
 | **Bundle ID** | `com.mshrmnsr.timeannouncer` |
 | **LaunchAgent label** | `com.mshrmnsr.timeannouncer` |
 | **macOS target** | macOS 11+ (uses `kIOMainPortDefault`, `kAudioObjectPropertyElementMain`) |
@@ -65,7 +65,7 @@ open "../TimeAnnouncer.app"
 │       └── MacOS/
 │           └── TimeAnnouncer             — Compiled binary (copied from Build/)
 ├── TimeAnnouncerBuild/
-│   ├── main.swift                        — Entire application source (~2119 lines)
+│   ├── main.swift                        — Entire application source (~2355 lines)
 │   └── announcer.log                     — Runtime log (created on first launch, appended)
 ├── ARCHITECTURE.md                       — This file
 └── install.sh                            — Optional install script
@@ -116,25 +116,24 @@ Conforms to: `NSObject`, `NSApplicationDelegate`, `NSWindowDelegate`, `AVSpeechS
 
 | MARK | Lines (approx.) | Key methods |
 |------|----------------|-------------|
-| App Launch | 292–328 | `applicationDidFinishLaunching` — full initialization sequence |
+| App Launch | 291–328 | `applicationDidFinishLaunching` — full initialization sequence |
 | Preferences | 361–401 | `loadPreferences()`, `savePreference(_:value:)` |
 | Build Window | 403–968 | `buildWindow()` — programmatic NSWindow + 3-tab NSTabView |
-| Log Refresh | 970–1001 | `startLogRefreshTimer()` |
-| Menu Bar | 1002–1254 | `setupMenuBarMode()`, `togglePopover(_:)` |
-| Settings Window | 1195–1255 | `openSettingsWindow()` |
-| Floating Window | 1256–1403 | `setupFloatingMode()` — NSPanel HUD with hover transparency |
-| UI Update | 1404–1525 | `startUIUpdateTimer()`, `refreshUI()`, `updateFloatingPanel()` |
-| Scheduling | 1526–1562 | `scheduleNextAnnouncement()` — primary DispatchSourceTimer |
-| Watchdog | 1564–1653 | `startWatchdog()`, `startBackupWatchdog()`, `watchdogTick()` |
-| Lid Notification | 1585–1655 | `registerLidNotification()`, `handlePowerNotification()` |
-| Hotkeys | 1656–1703 | `registerGlobalHotkey()`, `handleHotkeyEvent(_:)` |
-| Speech | 1705–1926 | `speakTime()`, `announceNowAction()`, `getAudioState()`, `speak(_:)` |
-| Screen Sleep | 1933–1948 | `screenDidSleep()`, `screenDidWake()` |
-| Actions | 1950+ | `toggleEnabled()`, `muteFor(minutes:)`, `unmuteAction()`, etc. |
-| Launch at Login | 2062–2081 | `toggleStartAtLogin(_:)`, `writeLaunchAgentPlist()` |
-| Cleanup | 2083–2101 | `applicationWillTerminate(_:)` — releases all resources |
+| Log Refresh | 970–999 | `startLogRefreshTimer()` |
+| Menu Bar | 1000–1224 | `setupMenuBarMode()`, `togglePopover(_:)` |
+| Settings Window | 1195–1225 | `openSettingsWindow()` |
+| Floating Window | 1225–1360 | `setupFloatingMode()` — NSPanel HUD with hover transparency |
+| Mode Switching | 1361–1388 | `switchDisplayMode(to:)` |
+| UI Update | 1405–1547 | `startUIUpdateTimer()`, `refreshUI()` (includes smart status-bar label since v4.4) |
+| Scheduling | 1549–1585 | `scheduleNextAnnouncement()` — primary DispatchSourceTimer |
+| Watchdog | 1587–1678 | `startWatchdog()`, `startBackupWatchdog()`, `watchdogTick()`, `registerLidNotification()`, `handlePowerNotification()` |
+| Hotkeys | 1679–1728 | `registerGlobalHotkey()`, `handleHotkeyEvent(_:)` |
+| Speech | 1730–1956 | `speakTime()`, `announceNowAction()`, `getAudioState()`, `speak(_:)` |
+| Screen Sleep | 1958–1973 | `screenDidSleep()`, `screenDidWake()` |
+| Actions | 1975–2107 | `toggleEnabled()`, `muteFor(minutes:)`, `unmuteAction()`, launch-at-login helpers, etc. |
+| Cleanup | 2108–2127 | `applicationWillTerminate(_:)` — releases all resources |
 
-### Bootstrap (lines 2104–2119)
+### Bootstrap (lines 2129–2144)
 
 ```swift
 let app = NSApplication.shared
@@ -167,6 +166,9 @@ All keys use `UserDefaults.standard`. Loaded in `loadPreferences()` (line 363), 
 | `TAHotkeyMute` | `String` | `"m"` | Letter for Ctrl+Shift+? to toggle mute (15 min) |
 | `TAHotkeyOpen` | `String` | `"a"` | Letter for Ctrl+Shift+? to open UI |
 | `TADisplayMode` | `String` | `"menuBar"` | `DisplayMode.rawValue` — persists between launches |
+| `TAFloatingPanelX` | `Double?` | `nil` | Saved floating-panel origin X (v4.6+). Written by `saveFloatingPanelPosition()` after a drag settles |
+| `TAFloatingPanelY` | `Double?` | `nil` | Saved floating-panel origin Y (v4.6+). Restored on `setupFloatingMode()`; clamped to the containing screen |
+| `TALastTab` | `String?` | `"main"` | Identifier (`"main"`/`"settings"`/`"log"`) of the last-selected settings-window tab (v4.7+) |
 
 ### Runtime Properties (not persisted)
 
@@ -211,28 +213,55 @@ var canSpeak: Bool {
 | Tab | Contents |
 |-----|----------|
 | **Main** | Status label, next-announce countdown, lid indicator, Enable/Disable button, Announce Now button, volume slider (0–100%), mute duration popup, Mute/Unmute buttons, mute-remaining label |
-| **Settings** | Interval popup (5/10/15/30 min), All Day checkbox, Start/End hour popups, Voice popup (populated from AVSpeechSynthesisVoice.speechVoices()), Hourly chime checkbox, Chime volume slider, Start at Login checkbox, Hotkey buttons (Ctrl+Shift+?) for announce/mute/open, Display Mode segmented control |
-| **Log** | NSScrollView + NSTextView (monospace) showing last N lines from announcer.log, auto-refreshed every 5s |
+| **Settings** | Interval popup (5/10/15/30 min), All Day checkbox, Start/End hour popups, Voice popup + **Test button** (v4.7+) for live preview, Hourly chime checkbox, Chime volume slider, Start at Login checkbox, Hotkey buttons (Ctrl+Shift+?) for announce/mute/open, Display Mode segmented control |
+| **Log** | NSScrollView + NSTextView (monospace) showing last N lines from announcer.log, auto-refreshed every 5 s. Buttons: **Share…**, **Copy** (v4.7+, copies the displayed text to the pasteboard), **Clear Log** |
 
 - **Menu bar mode behavior**: Window hides itself (`window.orderOut(nil)`) when popover opens/closes. Returns to `.accessory` activation policy when window closes.
 - **Floating mode behavior**: Settings window is shown via `openSettingsWindow()` when Dock icon is clicked or hotkey triggers.
+- **Tab memory** (v4.7+): The last-selected tab identifier is written to `TALastTab` on every tab switch via the `NSTabViewDelegate.tabView(_:didSelect:)` hook, and restored on `buildWindow()` and `openSettingsWindow()`.
+
+### App Main Menu (v4.7+)
+
+Built in the bootstrap block. Provides standard macOS menu structure:
+
+| Menu | Items (and shortcuts) |
+|------|-----------------------|
+| **Time Announcer** | Settings… (⌘,) · Announce Now (⌘T) · Toggle Mute (⌘⇧M) · Hide (⌘H) · Quit (⌘Q) |
+| **Edit** | Cut/Copy/Paste/Select All — required for text selection in the Log tab |
+| **Window** | Minimize (⌘M, when Edit focus elsewhere) · Zoom · Close (⌘W) |
+
+The status-bar right-click menu includes a **Mute submenu** (v4.7+) with presets: 15 min / 30 min / 1 h / 2 h / 4 h / "Until tomorrow at 9 AM" (computed via `Calendar.current`; rolls to the next day if past 9 AM).
 
 ### Menu Bar Mode (`.menuBar`)
 
 - **NSStatusItem** with `NSStatusBar.system.statusItem(withLength: .variableLength)`
-- **Button title**: Clock emoji `"🕐"` (or similar) — changes to reflect mute state
+- **Smart countdown title** (updated every 1 s in `refreshUI()`):
+
+  | State | Label |
+  |-------|-------|
+  | Active, speaking allowed | `⏰ 4m` — minutes until next announcement (rounded up). Shows `⏰ <1m` in the final minute. |
+  | Muted (temporary) | `🔇 3m` — minutes of mute remaining. Falls back to `🔇` if `muteEndDate` is `nil`. |
+  | Disabled (master switch off) | `⏸` |
+  | Lid closed | `💤` |
+  | Outside active hours | `😴` |
+
+  Button uses a monospaced-digit font so the width doesn't jitter as the count decrements. The title is only reassigned when it changes, to avoid unnecessary redraws.
 - **NSPopover** (transient behavior) contains the full 3-tab settings window content
 - Shown/hidden via `togglePopover(_:)` — triggered by status bar click or Ctrl+Shift+A hotkey
 - App activation policy: `.accessory` (no Dock icon) when popover is closed
 
 ### Floating Window Mode (`.floatingWindow`)
 
-- **NSPanel** with `.nonactivatingPanel + .hudWindow + .utilityWindow`
+- **NSPanel** with `.nonactivatingPanel + .borderless`
 - **Level**: `.floating` — always on top
-- **Content**: Minimal HUD — current time (large), next-announcement countdown (small), status dot (green=active / red=muted or off)
-- **Hover transparency**: Fully opaque when mouse hovers, semi-transparent otherwise (`alphaValue` animation via `NSTrackingArea`)
-- **Position**: Draggable, position not persisted between sessions
-- **Settings access**: Ctrl+Shift+A opens the full settings window as a separate panel
+- **Content**: Minimal HUD — current time (large), next-announcement countdown (small, hover-only), status dot (green=active / red=muted or off)
+- **Hover transparency**: Fully opaque when mouse hovers, semi-transparent (0.35α) otherwise (`alphaValue` animation via `NSTrackingArea`)
+- **Double-click** opens the full settings window (v4.5+). Right-click shows a context menu with the same option.
+- **Edge snap** (v4.5+): After any drag, a 0.15 s debounce fires `snapFloatingPanelToEdge()`. If any edge of the panel is within 40 pt of the screen's `visibleFrame`, the panel animates flush to that edge. Corner snaps work by triggering both horizontal and vertical snap simultaneously.
+  - Observer: `NSWindow.didMoveNotification` on `floatingPanel`, removed in `teardownFloatingMode()`.
+  - Debounce timer: `snapDebounceTimer` (cancelled on teardown and quit).
+- **Position**: Draggable (`isMovableByWindowBackground = true`), position not persisted between sessions
+- **Settings access**: Double-click, right-click → "Open Settings…", or Ctrl+Shift+A
 
 ---
 
@@ -257,6 +286,7 @@ var canSpeak: Bool {
 | `muteTimer` | `NSTimer` | Fires at `muteEndDate` | Clears `isMuted` when temporary mute expires |
 | `uiUpdateTimer` | `NSTimer` | 1 s | Updates the next-announce countdown and floating panel display |
 | `logRefreshTimer` | `NSTimer` | 5 s | Re-reads `announcer.log` into the Log tab NSTextView |
+| `snapDebounceTimer` | `NSTimer` | 0.15 s one-shot | Fires after the floating panel stops moving; calls `snapFloatingPanelToEdge()` |
 
 **Timer setup sequence** (called from `applicationDidFinishLaunching`):
 1. `scheduleNextAnnouncement()` — starts `primaryTimer`
@@ -546,11 +576,11 @@ Memory management: `takeRetainedValue()` bridges the CF object to Swift ARC, whi
 
 5. **Opaque skip behavior**: When an announcement is skipped (lid closed, muted, outside active hours), there is no visual feedback in the UI. User can't tell why silence happened without reading the log.
 
-6. **Menu bar label is static**: Clock emoji only — no glanceable countdown to next announcement.
+6. ~~**Menu bar label is static**: Clock emoji only — no glanceable countdown to next announcement.~~ **Done in v4.4** — status-bar title is now a smart countdown (`⏰ 4m`, `🔇 3m`, `⏸`, `💤`, `😴`) driven by `refreshUI()`.
 
 7. **No announcement history or stats**: Log is raw text. No way to see "how many announcements today?" or build an accountability streak.
 
-8. **App path is hardcoded in LaunchAgent**: Plist uses `NSHomeDirectory() + "/claude1/time announcer/TimeAnnouncer.app"` — breaks if the app is moved.
+8. ~~App path is hardcoded in LaunchAgent~~ **Fixed in v4.6**: `resolveAppBundlePath()` now derives the path from `ProcessInfo.arguments[0]` at plist-write time; legacy path kept as fallback only.
 
 ### Top 5 Improvements to Reach 10/10
 
@@ -560,11 +590,10 @@ Memory management: `takeRetainedValue()` bridges the CF object to Swift ARC, whi
 - **API**: `EKEventStore` + `EKCalendar` — standard Swift, no third-party dependency.
 - **Effort**: Medium. Requires calendar permission prompt.
 
-#### Improvement 2: Smart Menu Bar Label (UX +1, Features +0.5)
-- **Problem**: Menu bar shows only a static emoji — no time context.
-- **Solution**: Show time-until-next-announcement in the menu bar: `⏰ 4m` or `⏰ 12:00`. Update every minute. Show `⏸` when muted.
-- **Code change**: `statusItem.button?.title = " \(nextLabel)"` in `startUIUpdateTimer()`.
-- **Effort**: Low (5 lines of code).
+#### ~~Improvement 2: Smart Menu Bar Label~~ ✅ Shipped in v4.4
+- **Was**: Menu bar showed only a static clock emoji.
+- **Now**: Status-bar title reflects app state — `⏰ Xm` active, `🔇 Xm` muted, `⏸` disabled, `💤` lid closed, `😴` outside active hours. Updated every 1 s in `refreshUI()` (only reassigned when the string changes).
+- **Implementation**: `setupMenuBarMode()` seeds the title + a monospaced-digit font; `refreshUI()` recomputes the label alongside the existing countdown.
 
 #### Improvement 3: First-Run Onboarding + Permission Flow (UX +2)
 - **Problem**: First launch is cold — accessibility permission fails silently, hotkeys don't work, user confused.
@@ -587,5 +616,5 @@ Memory management: `takeRetainedValue()` bridges the CF object to Swift ARC, whi
 
 ---
 
-*Last updated: v4.3 — 2026-04-07*
+*Last updated: v4.7 — 2026-04-20 (UX wins: standard app main menu with Cmd+, / Cmd+W / Cmd+T / Cmd+Shift+M / Edit menu / Window menu, last-tab memory, Copy-logs button, extended mute submenu, Test Voice button)*
 *Next update required when: any change to main.swift*
